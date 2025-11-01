@@ -27,7 +27,7 @@ class BatteryOptimizer:
         
         # Create simulation
         sim = pybamm.Simulation(self.model, parameter_values=params)
-        
+
         try:
             # Solve for 1C discharge
             solution = sim.solve([0, 3600])  # 1 hour simulation
@@ -36,6 +36,10 @@ class BatteryOptimizer:
             time = solution["Time [s]"].data
             voltage = solution["Terminal voltage [V]"].data
             current = solution["Current [A]"].data
+            
+            # Debug: print minimum voltage
+            #min_voltage = np.min(voltage)
+            #print(f"Simulation time: {time[-1]} s, min voltage: {min_voltage:.2f} V")
             
             # Calculate energy delivered
             energy = np.trapz(voltage * current, time)
@@ -110,7 +114,7 @@ class BatteryOptimizer:
                 "Negative electrode thickness [m]": x[1]
             }
             results = self.simulate_battery(params_dict)
-            return results["min_voltage"] - 3.0  # min_voltage >= 3.0V
+            return results["min_voltage"] - 3.0 
         
         # Total thickness constraint (manufacturing limits)
         def thickness_constraint(x):
@@ -151,9 +155,45 @@ class BatteryOptimizer:
             method='SLSQP',
             bounds=bounds,
             constraints=self.constraints(),
-            options={'ftol': 1e-6, 'disp': True}
+            options={'ftol': 1e-6, 'disp': True} #max_iter=100 is the default
         )
         
+        return result
+    
+    def optimize_enhanced_design(self, design_variables, initial_guess=None):
+        """
+        Optimize battery design with enhanced parameters
+        
+        Args:
+            design_vars: Dictionary of design variable bounds
+            initial_guess: Initial guess for parameters
+            
+        Returns:
+            dict: Optimization results
+        """
+
+        bounds = list(design_variables.values())
+        keys = list(design_variables.keys())
+
+        def objective(x):
+            params_dict = dict(zip(keys, x))
+            results = self.simulate_battery(params_dict)
+            if not results["success"]:
+                return 1e6
+            return -results["energy_density"]
+        
+        print("Starting optimization...")
+        print(f"Initial guess: Positive={initial_guess[0]*1e6:.1f}μm, "
+              f"Negative={initial_guess[1]*1e6:.1f}μm")
+
+        result = minimize(
+            objective,
+            x0=[np.mean(b) for b in bounds],
+            method='SLSQP',
+            bounds=bounds,
+            constraints=self.constraints(),
+            options={'maxiter': 50, 'disp': True}
+        )
         return result
     
     def plot_results(self, initial_params, optimized_params):
@@ -204,7 +244,9 @@ class BatteryOptimizer:
         ax2.grid(True, alpha=0.3)
         
         plt.tight_layout()
-        plt.show()
+        plt.show(block=False) # Changed to non-blocking
+        plt.pause(10)
+        plt.close()
 
 # Possible extension to higher number of parameters
 def enhanced_optimization():
@@ -236,12 +278,20 @@ def main():
     """Main function to run the battery optimization"""
     # Initialize optimizer
     optimizer = BatteryOptimizer()
-    
+
     # Set initial guess
     initial_guess = [7.0e-5, 8.5e-5]  # 70μm positive, 85μm negative
-    
+
     # Run optimization
-    result = optimizer.optimize_design(initial_guess)
+    enhanced_vars = {
+        'Positive electrode thickness [m]': (5e-5, 15e-5),
+        'Negative electrode thickness [m]': (5e-5, 15e-5),
+        'Positive electrode porosity': (0.2, 0.4),
+    }
+    result = optimizer.optimize_enhanced_design(enhanced_vars, initial_guess)
+    
+    
+    #result = optimizer.optimize_design(initial_guess) - usually doesn't find a solution with 3.0V constraint
     
     # Print results
     if result.success:
