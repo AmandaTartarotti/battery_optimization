@@ -37,6 +37,10 @@ class BatteryOptimizer:
             voltage = solution["Terminal voltage [V]"].data
             current = solution["Current [A]"].data
             
+            # Debug: print minimum voltage
+            #min_voltage = np.min(voltage)
+            #print(f"Simulation time: {time[-1]} s, min voltage: {min_voltage:.2f} V")
+            
             # Calculate energy delivered
             energy = np.trapz(voltage * current, time)
             
@@ -49,7 +53,7 @@ class BatteryOptimizer:
                 "Negative electrode thickness [m]", 
                 8.5e-5
             )
-            
+
             # Simple energy density calculation (Wh/L)
             total_thickness = positive_electrode_thickness + negative_electrode_thickness
             energy_density = (energy / 3600) / (total_thickness * 1000)  # Wh/L
@@ -87,10 +91,16 @@ class BatteryOptimizer:
         """
         positive_thickness = x[0]
         negative_thickness = x[1]
+        positive_porosity = x[2]
+        negative_porosity = x[3]
+        positive_particle_radius = x[4]
         
         params_dict = {
             "Positive electrode thickness [m]": positive_thickness,
-            "Negative electrode thickness [m]": negative_thickness
+            "Negative electrode thickness [m]": negative_thickness,
+            "Positive electrode porosity": positive_porosity,
+            "Negative electrode porosity": negative_porosity,
+            "Positive particle radius [m]": positive_particle_radius
         }
         
         results = self.simulate_battery(params_dict)
@@ -101,16 +111,19 @@ class BatteryOptimizer:
         # Return negative energy density (we want to maximize energy density)
         return -results["energy_density"]
     
-    def constraints(self):
-        """Define optimization constraints"""
-        # Voltage should not drop below 3.0V during discharge 3.0
+    def enhanced_constraints(self):
+        """Define enhanced optimization constraints"""
+        # Voltage should not drop below 3.0V during discharge
         def voltage_constraint(x):
             params_dict = {
                 "Positive electrode thickness [m]": x[0],
-                "Negative electrode thickness [m]": x[1]
+                "Negative electrode thickness [m]": x[1],
+                "Positive electrode porosity": x[2],
+                "Negative electrode porosity": x[3],
+                "Positive particle radius [m]": x[4]
             }
             results = self.simulate_battery(params_dict)
-            return results["min_voltage"] - 3.0
+            return results["min_voltage"] - 2.5
         
         # Total thickness constraint (manufacturing limits)
         def thickness_constraint(x):
@@ -121,39 +134,47 @@ class BatteryOptimizer:
             {'type': 'ineq', 'fun': thickness_constraint}
         ]
     
-    def optimize_design(self, initial_guess=None):
+    
+    def optimize_enhanced_design(self, initial_guess=None):
         """
-        Optimize battery electrode thicknesses
+        Optimize battery design with enhanced parameters
         
         Args:
-            initial_guess: Initial guess for [positive_thickness, negative_thickness]
+            design_vars: Dictionary of design variable bounds
+            initial_guess: Initial guess for parameters
             
         Returns:
             dict: Optimization results
         """
+
         if initial_guess is None:
-            initial_guess = [7.0e-5, 8.5e-5]  # Default values in meters
-        
+            initial_guess = [7.0e-5, 8.5e-5, 0.3, 0.3, 5e-6]  # Default values
+
         # Bounds for parameters (in meters)
         bounds = [
-            (5.0e-5, 12.0e-5),  # Positive electrode thickness
-            (6.0e-5, 12.0e-5)   # Negative electrode thickness
+            (5.0e-5, 15.0e-5),  # Positive electrode thickness
+            (5.0e-5, 15.0e-5),  # Negative electrode thickness
+            (0.2, 0.4),        # Positive electrode porosity
+            (0.2, 0.4),        # Negative electrode porosity
+            (1e-6, 10e-6),     # Positive particle radius
         ]
-        
+
         print("Starting optimization...")
-        print(f"Initial guess: Positive={initial_guess[0]*1e6:.1f}μm, "
-              f"Negative={initial_guess[1]*1e6:.1f}μm")
-        
-        # Perform optimization
+        print(f"Initial guess: Positive electrode thickness={initial_guess[0]*1e6:.1f}μm, "
+              f"Negative electrode thickness ={initial_guess[1]*1e6:.1f}μm,"
+              f"Positive porosity={initial_guess[2]:.2f}, "
+              f"Negative porosity={initial_guess[3]:.2f}, "
+              f"Positive particle radius={initial_guess[4]*1e6:.2f} μm"
+              )
+
         result = minimize(
             self.objective_function,
             initial_guess,
             method='SLSQP',
             bounds=bounds,
-            constraints=self.constraints(),
-            options={'ftol': 1e-6, 'disp': True} #max_iter=100 is the default
+            constraints=self.enhanced_constraints(),
+            options={'maxiter': 50, 'disp': True}
         )
-        
         return result
     
     def plot_results(self, initial_params, optimized_params):
@@ -233,21 +254,22 @@ def enhanced_optimization():
         'min_voltage_1C': '>= 3.0',
         'max_temperature': '<= 60.0',
         'power_density_5C': '>= 1000'
-    }        
+    } 
+
 def main():
     """Main function to run the battery optimization"""
     # Initialize optimizer
     optimizer = BatteryOptimizer()
 
     # Set initial guess
-    initial_guess = [7.0e-5, 8.5e-5]  # 70μm positive, 85μm negative
-        
-    result = optimizer.optimize_design(initial_guess) # usually doesn't find a solution with 3.0V constraint
+    initial_guess = [7.0e-5, 8.5e-5, 0.3, 0.3, 5e-6]  # 70μm positive, 85μm negative
+
+    result = optimizer.optimize_enhanced_design(initial_guess)
     
     # Print results
     if result.success:
         print("\n" + "="*50)
-        print("OPTIMIZATION RESULTS")
+        print("OPTIMIZATION RESULTS - ENHANCED DESIGN")
         print("="*50)
         print(f"Optimization successful: {result.message}")
         print(f"Number of iterations: {result.nit}")
@@ -259,7 +281,10 @@ def main():
         # Compare with initial design
         initial_results = optimizer.simulate_battery({
             "Positive electrode thickness [m]": initial_guess[0],
-            "Negative electrode thickness [m]": initial_guess[1]
+            "Negative electrode thickness [m]": initial_guess[1],
+            "Positive electrode porosity": initial_guess[2],
+            "Negative electrode porosity": initial_guess[3],
+            "Positive particle radius [m]": initial_guess[4]
         })
         
         if initial_results["success"]:
