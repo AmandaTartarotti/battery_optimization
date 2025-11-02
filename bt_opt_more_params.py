@@ -207,9 +207,10 @@ class BatteryOptimizer:
 
     def plot_results(self, initial_params, optimized_params):
         """Plot comparison between initial and optimized designs"""
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
 
-        # Simulate initial design
+        # --- Voltage comparison ---
+        # Simulate initial design (only first 2 matter for visualization)
         initial_results = self.simulate_battery({
             "Positive electrode thickness [m]": initial_params[0],
             "Negative electrode thickness [m]": initial_params[1]
@@ -221,7 +222,6 @@ class BatteryOptimizer:
             "Negative electrode thickness [m]": optimized_params[1]
         })
 
-        # Plot voltage profiles
         if initial_results["success"] and optimized_results["success"]:
             ax1.plot(initial_results["time"] / 60, initial_results["voltage_profile"],
                      'b-', label='Initial Design', linewidth=2)
@@ -233,22 +233,48 @@ class BatteryOptimizer:
             ax1.legend()
             ax1.grid(True)
 
-        # Plot design parameters
-        labels = ['Positive\nElectrode', 'Negative\nElectrode']
-        initial_thickness = [initial_params[0] * 1e6, initial_params[1] * 1e6]
-        optimized_thickness = [optimized_params[0] * 1e6, optimized_params[1] * 1e6]
+        # --- Multi-parameter comparison ---
+        labels = [
+            'Pos. thickness [μm]',
+            'Neg. thickness [μm]',
+            'Separator [μm]',
+            'Pos. porosity',
+            'Neg. porosity',
+            'Pos. particle radius [μm]',
+            'Neg. particle radius [μm]'
+        ]
+
+        # Convert to appropriate scales
+        init_scaled = [
+            initial_params[0] * 1e6,  # μm
+            initial_params[1] * 1e6,
+            20,                       # Assume mid separator for baseline (dummy)
+            0.3,                      # Assume mid porosity
+            0.3,
+            5.0,                      # μm
+            6.0                       # μm
+        ]
+
+        opt_scaled = [
+            optimized_params[0] * 1e6,
+            optimized_params[1] * 1e6,
+            optimized_params[2] * 1e6,
+            optimized_params[3],
+            optimized_params[4],
+            optimized_params[5] * 1e6,
+            optimized_params[6] * 1e6
+        ]
 
         x = np.arange(len(labels))
         width = 0.35
 
-        ax2.bar(x - width / 2, initial_thickness, width, label='Initial', alpha=0.7)
-        ax2.bar(x + width / 2, optimized_thickness, width, label='Optimized', alpha=0.7)
+        ax2.bar(x - width/2, init_scaled, width, label='Initial', alpha=0.7)
+        ax2.bar(x + width/2, opt_scaled, width, label='Optimized', alpha=0.7)
 
-        ax2.set_xlabel('Electrode Type')
-        ax2.set_ylabel('Thickness [μm]')
-        ax2.set_title('Electrode Thickness Comparison')
         ax2.set_xticks(x)
-        ax2.set_xticklabels(labels)
+        ax2.set_xticklabels(labels, rotation=45, ha='right')
+        ax2.set_ylabel('Scaled parameter value')
+        ax2.set_title('Comparison of All Optimized Parameters')
         ax2.legend()
         ax2.grid(True, alpha=0.3)
 
