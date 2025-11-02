@@ -92,21 +92,29 @@ class BatteryOptimizer:
         Returns:
             float: Negative energy density (to maximize)
         """
-        positive_thickness = x[0]
-        negative_thickness = x[1]
+        # inside objective_function(x) with 7 dims:
+        pos_thk, neg_thk, sep_thk, pos_eps, neg_eps, pos_rad, neg_rad = x
 
         params_dict = {
-            "Positive electrode thickness [m]": positive_thickness,
-            "Negative electrode thickness [m]": negative_thickness
+            "Positive electrode thickness [m]": pos_thk,
+            "Negative electrode thickness [m]": neg_thk,
+            "Separator thickness [m]": sep_thk,
+            "Positive electrode porosity": pos_eps,
+            "Negative electrode porosity": neg_eps,
+            "Positive particle radius [m]": pos_rad,
+            "Negative particle radius [m]": neg_rad,
         }
 
+        penalty = 0.0
+        total_thk = pos_thk + sep_thk + neg_thk
+        if total_thk > 2.5e-4:
+            penalty += 1e5 * (total_thk - 2.5e-4)
+
         results = self.simulate_battery(params_dict)
+        if not results["success"] or results["min_voltage"] < 3.0:
+            return 1e6  # infeasible / failed
 
-        if not results["success"]:
-            return 1e6  # Large penalty for failed simulations
-
-        # Return negative energy density (we want to maximize energy density)
-        return -results["energy_density"]
+        return -(results["energy_density"]) + penalty
 
     """ no need for these in bayesian  opt
     def constraints(self):
@@ -156,8 +164,13 @@ class BatteryOptimizer:
 
         # Define the optimization domain in GPyOpt format
         domain = [
-            {'name': 'positive_thickness', 'type': 'continuous', 'domain': (bounds[0][0], bounds[0][1])},
-            {'name': 'negative_thickness', 'type': 'continuous', 'domain': (bounds[1][0], bounds[1][1])}
+            {'name': 'pos_thk', 'type': 'continuous', 'domain': (5e-5, 12e-5)},
+            {'name': 'neg_thk', 'type': 'continuous', 'domain': (6e-5, 12e-5)},
+            {'name': 'sep_thk', 'type': 'continuous', 'domain': (1e-5, 3e-5)},
+            {'name': 'pos_eps', 'type': 'continuous', 'domain': (0.25, 0.40)},
+            {'name': 'neg_eps', 'type': 'continuous', 'domain': (0.25, 0.40)},
+            {'name': 'pos_rad', 'type': 'continuous', 'domain': (1e-6, 8e-6)},
+            {'name': 'neg_rad', 'type': 'continuous', 'domain': (1e-6, 1e-5)},
         ]
 
         # Wrap the objective function so it matches GPyOpt’s expected input shape
@@ -167,14 +180,17 @@ class BatteryOptimizer:
             return np.array(results).reshape(-1, 1)
 
         # Create and run the Bayesian optimizer
+        kernel = GPy.kern.Matern52(input_dim=len(domain), ARD=True)
         bo = GPyOpt.methods.BayesianOptimization(
-            f=f,
-            domain=domain,
-            acquisition_type='MPI',
-            maximize=False
+            f=f, domain=domain, kernel=kernel,
+            acquisition_type='EI', acquisition_jitter=0.01
         )
 
         bo.run_optimization(max_iter=20, verbosity=True)
+
+        ls = bo.model.model.kern.lengthscale.values
+        rel_importance = (1 / ls ** 2) / np.sum(1 / ls ** 2)
+        print("Relative importance per var (pos_thk .. neg_rad):", rel_importance)
 
         # Mimic SciPy’s `result` object so the rest of the code still works
         class BOResult:
