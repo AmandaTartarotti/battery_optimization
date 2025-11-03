@@ -1,328 +1,321 @@
 """
-Battery Optimization with Bayesian Optimization (RP17)
-Extended class approach - adds BO methods to existing BatteryOptimizer
+Battery Optimization with Bayesian Optimization
+===============================================
 """
-
-from battery_optimization import BatteryOptimizer
+import pybamm
 import numpy as np
 import matplotlib.pyplot as plt
+from scipy.optimize import minimize
+import GPy
 import GPyOpt
-import time
+import datetime
 
 
-class BatteryOptimizerBO(BatteryOptimizer):
-    """
-    Extended BatteryOptimizer class with Bayesian Optimization capabilities
-    
-    Inherits all original methods from BatteryOptimizer and adds:
-    - Bayesian Optimization with GPyOpt
-    - Constraint handling for BO
-    - BO-specific visualization methods
-    """
-    
+class BatteryOptimizer:
     def __init__(self):
-        """Initialize with parent class and add BO-specific attributes"""
-        super().__init__()
-        self.evaluation_count = 0
-        self.evaluation_history = []
-    
-    # ============================================
-    # BAYESIAN OPTIMIZATION METHODS
-    # ============================================
-    
-    def bo_objective(self, x):
+        """Initialize the battery optimizer with a DFN model"""
+        self.model = pybamm.lithium_ion.DFN()
+
+    def simulate_battery(self, params_dict):
         """
-        Wrapper for Bayesian Optimization objective
-        Compatible with GPyOpt format
-        Includes constraint handling via penalty method
-        
+        Simulate battery performance with given parameters
+
         Args:
-            x: 2D array from GPyOpt [[pos_thick, neg_thick]]
-            
+            params_dict: Dictionary of parameter values to optimize
+
         Returns:
-            2D array: [[objective_value]]
+            dict: Simulation results including energy density and voltage
         """
-        self.evaluation_count += 1
-        
-        # Extract parameters
-        positive_thickness = x[0, 0]
-        negative_thickness = x[0, 1]
-        
+        # Get default parameters
+        params = pybamm.ParameterValues("Chen2020")
+
+        # Update with optimized parameters
+        for key, value in params_dict.items():
+            params.update({key: value})
+
+        try:
+            # Solve for 1C discharge
+
+            # solution = sim.solve([0, 3600])  # 1 hour simulation commented this
+            experiment = pybamm.Experiment(["Discharge at 1C until 3.0 V"])
+            sim = pybamm.Simulation(self.model, parameter_values=params, experiment=experiment)
+            solution = sim.solve()
+
+            # Extract results
+            time = solution["Time [s]"].data
+            voltage = solution["Terminal voltage [V]"].data
+            current = solution["Current [A]"].data
+
+            # Calculate energy delivered
+            energy = np.trapz(voltage * current, time)
+
+            # Get design parameters for normalization
+            positive_electrode_thickness = params_dict.get(
+                "Positive electrode thickness [m]",
+                7.0e-5
+            )
+            negative_electrode_thickness = params_dict.get(
+                "Negative electrode thickness [m]",
+                8.5e-5
+            )
+
+            # Simple energy density calculation (Wh/L)
+            total_thickness = positive_electrode_thickness + negative_electrode_thickness
+            energy_density = (energy / 3600) / (total_thickness * 1000)  # Wh/L
+
+            # Check for minimum voltage constraint
+            min_voltage = np.min(voltage)
+
+            return {
+                "energy_density": energy_density,
+                "min_voltage": min_voltage,
+                "voltage_profile": voltage,
+                "time": time,
+                "success": True
+            }
+
+        except Exception as e:
+            print(f"Simulation failed: {e}")
+            return {
+                "energy_density": 0,
+                "min_voltage": 0,
+                "voltage_profile": None,
+                "time": None,
+                "success": False
+            }
+
+    def objective_function(self, x):
+        """
+        Objective function for optimization
+
+        Args:
+            x: Array of parameters [positive_thickness, negative_thickness]
+
+        Returns:
+            float: Negative energy density (to maximize)
+        """
+        positive_thickness = x[0]
+        negative_thickness = x[1]
+
         params_dict = {
             "Positive electrode thickness [m]": positive_thickness,
             "Negative electrode thickness [m]": negative_thickness
         }
-        
-        print(f"\nBO Evaluation {self.evaluation_count}:")
-        print(f"  Positive: {positive_thickness*1e6:.2f} μm")
-        print(f"  Negative: {negative_thickness*1e6:.2f} μm")
-        
+
         results = self.simulate_battery(params_dict)
-        
+
         if not results["success"]:
-            obj_value = 1e6
-            print(f"  Simulation FAILED")
-        else:
-            # Negative energy density (minimize negative = maximize positive)
-            obj_value = -results["energy_density"]
-            
-            # Add penalty for constraint violations
-            penalty = 0
-            
-            # Constraint 1: Voltage must be >= 3.0V
-            if results["min_voltage"] < 3.0:
-                voltage_violation = 3.0 - results["min_voltage"]
-                penalty += 1000 * voltage_violation  # Large penalty
-                #print(f"  ⚠ Voltage constraint violated: {results['min_voltage']:.3f} V < 3.0 V")
-            
-            # Constraint 2: Total thickness must be <= 200 μm
-            total_thickness = positive_thickness + negative_thickness
-            if total_thickness > 20e-5:  # 200 μm in meters
-                thickness_violation = (total_thickness - 20e-5) * 1e6  # Convert to μm
-                penalty += 1000 * thickness_violation
-                #print(f"  ⚠ Thickness constraint violated: {total_thickness*1e6:.1f} μm > 200 μm")
-            
-            obj_value += penalty
-            
-            # if penalty == 0:
-            #     print(f"  ✓ Energy Density: {results['energy_density']:.2f} Wh/L")
-            #     print(f"  ✓ Min Voltage: {results['min_voltage']:.3f} V")
-            #     print(f"  ✓ Total Thickness: {total_thickness*1e6:.1f} μm")
-            # else:
-            #     print(f"  Energy Density: {results['energy_density']:.2f} Wh/L (with penalty)")
-        
-        # Store evaluation history
-        self.evaluation_history.append({
-            'iteration': self.evaluation_count,
-            'positive_thickness': positive_thickness,
-            'negative_thickness': negative_thickness,
-            'objective': obj_value,
-            'results': results
-        })
-        
-        return np.array([[obj_value]])
-    
-    def bo_constraint_voltage(self, x):
-        """
-        Voltage constraint for BO: min_voltage >= 3.0V
-        Returns positive value when constraint is satisfied
-        
-        Args:
-            x: 2D array [[pos_thick, neg_thick]]
-            
-        Returns:
-            2D array: [[constraint_value]]
-        """
-        positive_thickness = x[0, 0]
-        negative_thickness = x[0, 1]
-        
-        params_dict = {
-            "Positive electrode thickness [m]": positive_thickness,
-            "Negative electrode thickness [m]": negative_thickness
-        }
-        
-        results = self.simulate_battery(params_dict)
-        
-        if not results["success"]:
-            return np.array([[-1.0]])  # Constraint violated
-        
-        # Constraint: min_voltage - 3.0 >= 0
-        constraint_value = results["min_voltage"] - 3.0
-        
-        return np.array([[constraint_value]])
-    
-    def bo_constraint_thickness(self, x):
-        """
-        Total thickness constraint: total <= 20e-5 m (200 μm)
-        Returns positive value when constraint is satisfied
-        
-        Args:
-            x: 2D array [[pos_thick, neg_thick]]
-            
-        Returns:
-            2D array: [[constraint_value]]
-        """
-        total_thickness = x[0, 0] + x[0, 1]
-        
-        # Constraint: 20e-5 - total_thickness >= 0
-        constraint_value = 20e-5 - total_thickness
-        
-        return np.array([[constraint_value]])
-    
-    def optimize_with_bayesian(self, max_iter=10, initial_design_numdata=5, 
-                               acquisition_type='EI', use_constraints=True):
-        """
-        Optimize battery design using Bayesian Optimization
-        
-        Args:
-            max_iter: Maximum number of BO iterations
-            initial_design_numdata: Number of initial random samples
-            acquisition_type: Acquisition function ('EI', 'LCB', 'MPI')
-            use_constraints: Whether to use constraints (set False if having issues)
-            
-        Returns:
-            dict: Optimization results including best parameters and history
-        """
-        print("="*60)
-        print("BAYESIAN OPTIMIZATION")
-        print("="*60)
-        print(f"Acquisition function: {acquisition_type}")
-        print(f"Max iterations: {max_iter}")
-        print(f"Initial design points: {initial_design_numdata}")
-        print(f"Using constraints: {use_constraints}")
-        
-        # Reset evaluation counter and history
-        self.evaluation_count = 0
-        self.evaluation_history = []
-        
-        # Define domain (search space bounds)
-        domain = [
-            {'name': 'positive_thickness', 'type': 'continuous', 
-             'domain': (5.0e-5, 12.0e-5)},  # 50-120 μm
-            {'name': 'negative_thickness', 'type': 'continuous', 
-             'domain': (6.0e-5, 12.0e-5)}   # 60-120 μm
+            return 1e6  # Large penalty for failed simulations
+
+        # Return negative energy density (we want to maximize energy density)
+        return -results["energy_density"]
+
+    """ no need for these in bayesian  opt
+    def constraints(self):
+
+        # Voltage should not drop below 3.0V during discharge
+        def voltage_constraint(x):
+            params_dict = {
+                "Positive electrode thickness [m]": x[0],
+                "Negative electrode thickness [m]": x[1]
+            }
+            results = self.simulate_battery(params_dict)
+            return results["min_voltage"] - 3.0  # min_voltage >= 3.0V
+
+        # Total thickness constraint (manufacturing limits)
+        def thickness_constraint(x):
+            return 20e-5 - (x[0] + x[1])  # total_thickness <= 20μm
+
+        return [
+            {'type': 'ineq', 'fun': voltage_constraint},
+            {'type': 'ineq', 'fun': thickness_constraint}
         ]
-        
-        # Define constraints (GPyOpt format - optional)
-        constraints = None
-        if use_constraints:
-            # Note: GPyOpt constraints can be tricky. If they cause issues,
-            # constraints are handled via penalties in the objective function
-            print("Note: Constraints will be handled via penalty method in objective")
-            constraints = None
-        
-        # Create Bayesian Optimization object
-        bo_optimizer = GPyOpt.methods.BayesianOptimization(
-            f=self.bo_objective,
-            domain=domain,
-            constraints=constraints,  # Set to None to avoid GPyOpt constraint issues
-            acquisition_type=acquisition_type,
-            exact_feval=True,  # Deterministic evaluations
-            normalize_Y=True,  # Normalize objective values
-            initial_design_numdata=initial_design_numdata,
-            maximize=False  # We're minimizing negative energy density
-        )
-        
-        # Run optimization
-        start_time = time.time()
-        bo_optimizer.run_optimization(max_iter=max_iter)
-        elapsed_time = time.time() - start_time
-        
-        # Extract best solution
-        x_best = bo_optimizer.x_opt
-        f_best = bo_optimizer.fx_opt
-        
-        print("\n" + "="*60)
-        print("BAYESIAN OPTIMIZATION RESULTS")
-        print("="*60)
-        print(f"Total evaluations: {self.evaluation_count}")
-        print(f"Time elapsed: {elapsed_time:.1f} seconds")
-        print(f"Best energy density: {-f_best:.2f} Wh/L")
-        print(f"Optimal positive thickness: {x_best[0]*1e6:.2f} μm")
-        print(f"Optimal negative thickness: {x_best[1]*1e6:.2f} μm")
-        print(f"Total thickness: {(x_best[0] + x_best[1])*1e6:.2f} μm")
-        
-        return {
-            'optimizer': bo_optimizer,
-            'x_best': x_best,
-            'f_best': f_best,
-            'elapsed_time': elapsed_time,
-            'evaluation_history': self.evaluation_history,
-            'method': 'Bayesian Optimization',
-            'acquisition_type': acquisition_type
-        }
-    
-    # ============================================
-    # BO-SPECIFIC VISUALIZATION
-    # ============================================
-    
-    def plot_bo_convergence(self, bo_results):
+
         """
-        Plot Bayesian Optimization convergence
-        
+
+    def optimize_design(self, initial_guess=None):
+        """
+        Optimize battery electrode thicknesses
+
         Args:
-            bo_results: Results dictionary from optimize_with_bayesian()
+            initial_guess: Initial guess for [positive_thickness, negative_thickness]
+
+        Returns:
+            dict: Optimization results
         """
-        history = bo_results['evaluation_history']
-        
-        iterations = [h['iteration'] for h in history]
-        objectives = [-h['objective'] for h in history if h['objective'] < 1e5]
-        
-        # Calculate best so far
-        best_so_far = []
-        current_best = -np.inf
-        for h in history:
-            obj = -h['objective']
-            if h['objective'] < 1e5 and obj > current_best:
-                current_best = obj
-            best_so_far.append(current_best if current_best > -np.inf else np.nan)
-        
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
-        
-        # Plot 1: Convergence curve
-        valid_iterations = [iterations[i] for i in range(len(history)) 
-                           if history[i]['objective'] < 1e5]
-        
-        ax1.plot(valid_iterations, objectives, 'bo', alpha=0.5, 
-                label='Evaluated points', markersize=6)
-        ax1.plot(iterations, best_so_far, 'r-', linewidth=2.5, 
-                label='Best so far')
-        
-        ax1.set_xlabel('Iteration', fontsize=12)
-        ax1.set_ylabel('Energy Density [Wh/L]', fontsize=12)
-        ax1.set_title(f'BO Convergence ({bo_results["acquisition_type"]})', 
-                     fontsize=13, fontweight='bold')
-        ax1.legend(fontsize=11)
-        ax1.grid(True, alpha=0.3)
-        
-        # Plot 2: Parameter evolution
-        pos_thick = [h['positive_thickness']*1e6 for h in history]
-        neg_thick = [h['negative_thickness']*1e6 for h in history]
-        
-        ax2.plot(iterations, pos_thick, 'b.-', label='Positive electrode', 
-                linewidth=1.5, markersize=5)
-        ax2.plot(iterations, neg_thick, 'r.-', label='Negative electrode', 
-                linewidth=1.5, markersize=5)
-        ax2.axhline(y=(bo_results['x_best'][0]*1e6), color='b', 
-                   linestyle='--', alpha=0.5)
-        ax2.axhline(y=(bo_results['x_best'][1]*1e6), color='r', 
-                   linestyle='--', alpha=0.5)
-        
-        ax2.set_xlabel('Iteration', fontsize=12)
-        ax2.set_ylabel('Thickness [μm]', fontsize=12)
-        ax2.set_title('Parameter Evolution', fontsize=13, fontweight='bold')
-        ax2.legend(fontsize=11)
+        if initial_guess is None:
+            initial_guess = [7.0e-5, 8.5e-5]  # Default values in meters
+
+        # Bounds for parameters (in meters)
+        bounds = [
+            (5.0e-5, 12.0e-5),  # Positive electrode thickness
+            (6.0e-5, 12.0e-5)  # Negative electrode thickness
+        ]
+
+        print("Starting optimization...")
+        print(f"Initial guess: Positive={initial_guess[0] * 1e6:.1f}μm, "
+              f"Negative={initial_guess[1] * 1e6:.1f}μm")
+
+        # Define the optimization domain in GPyOpt format
+        domain = [
+            {'name': 'positive_thickness', 'type': 'continuous', 'domain': (bounds[0][0], bounds[0][1])},
+            {'name': 'negative_thickness', 'type': 'continuous', 'domain': (bounds[1][0], bounds[1][1])}
+        ]
+
+        # Wrap the objective function so it matches GPyOpt’s expected input shape
+        def f(X):
+            # X is a 2D array of shape (n_samples, n_dimensions)
+            results = [self.objective_function(x) for x in X]
+            return np.array(results).reshape(-1, 1)
+
+        # Create and run the Bayesian optimizer
+        bo = GPyOpt.methods.BayesianOptimization(
+            f=f,
+            domain=domain,
+            acquisition_type='MPI',
+            maximize=False
+        )
+
+        bo.run_optimization(max_iter=20, verbosity=True)
+
+        # Mimic SciPy’s `result` object so the rest of the code still works
+        class BOResult:
+            pass
+
+        result = BOResult()
+        result.x = bo.x_opt
+        result.fun = bo.fx_opt
+        result.success = True
+        result.message = "Bayesian optimization completed"
+        result.nit = len(bo.Y)
+
+        return result
+
+    def plot_results(self, initial_params, optimized_params):
+        """Plot comparison between initial and optimized designs"""
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+
+        # Simulate initial design
+        initial_results = self.simulate_battery({
+            "Positive electrode thickness [m]": initial_params[0],
+            "Negative electrode thickness [m]": initial_params[1]
+        })
+
+        # Simulate optimized design
+        optimized_results = self.simulate_battery({
+            "Positive electrode thickness [m]": optimized_params[0],
+            "Negative electrode thickness [m]": optimized_params[1]
+        })
+
+        # Plot voltage profiles
+        if initial_results["success"] and optimized_results["success"]:
+            ax1.plot(initial_results["time"] / 60, initial_results["voltage_profile"],
+                     'b-', label='Initial Design', linewidth=2)
+            ax1.plot(optimized_results["time"] / 60, optimized_results["voltage_profile"],
+                     'r--', label='Optimized Design', linewidth=2)
+            ax1.set_xlabel('Time [min]')
+            ax1.set_ylabel('Voltage [V]')
+            ax1.set_title('Discharge Voltage Profiles')
+            ax1.legend()
+            ax1.grid(True)
+
+        # Plot design parameters
+        labels = ['Positive\nElectrode', 'Negative\nElectrode']
+        initial_thickness = [initial_params[0] * 1e6, initial_params[1] * 1e6]
+        optimized_thickness = [optimized_params[0] * 1e6, optimized_params[1] * 1e6]
+
+        x = np.arange(len(labels))
+        width = 0.35
+
+        ax2.bar(x - width / 2, initial_thickness, width, label='Initial', alpha=0.7)
+        ax2.bar(x + width / 2, optimized_thickness, width, label='Optimized', alpha=0.7)
+
+        ax2.set_xlabel('Electrode Type')
+        ax2.set_ylabel('Thickness [μm]')
+        ax2.set_title('Electrode Thickness Comparison')
+        ax2.set_xticks(x)
+        ax2.set_xticklabels(labels)
+        ax2.legend()
         ax2.grid(True, alpha=0.3)
-        
+
+        # Add method to save image in a folder with timestamp
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"images/bo_optimization_results_{timestamp}.png"
+
         plt.tight_layout()
-        plt.show(block=False)
+        plt.savefig(filename, dpi=300)
+        plt.close()
+
+
+# Possible extension to higher number of parameters
+def enhanced_optimization():
+    """More realistic optimization with additional parameters"""
+
+    # Additional design variables
+    design_variables = {
+        'Positive electrode thickness [m]': (5e-5, 15e-5),
+        'Negative electrode thickness [m]': (5e-5, 15e-5),
+        'Positive electrode porosity': (0.2, 0.4),
+        'Negative electrode porosity': (0.2, 0.4),
+        'Positive particle radius [m]': (1e-6, 10e-6),
+    }
+
+    # Multiple objectives
+    objectives = {
+        'energy_density': 'maximize',
+        'capacity_fade_100_cycles': 'minimize',
+        'heat_generation': 'minimize'
+    }
+
+    # Multiple constraints
+    constraints = {
+        'min_voltage_1C': '>= 3.0',
+        'max_temperature': '<= 60.0',
+        'power_density_5C': '>= 1000'
+    }
 
 
 def main():
-    """
-    Simple test of Bayesian Optimization on battery design
-    """
-    print("\n" + "="*60)
-    print("TESTING BAYESIAN OPTIMIZATION")
-    print("="*60 + "\n")
-    
+    """Main function to run the battery optimization"""
     # Initialize optimizer
-    optimizer = BatteryOptimizerBO()
-    
-    # Run Bayesian Optimization
-    bo_results = optimizer.optimize_with_bayesian(
-        max_iter=5,
-        initial_design_numdata=5,
-        acquisition_type='EI'
-    )
+    optimizer = BatteryOptimizer()
 
-    print("\n" + "="*60)
-    print("BAYESIAN OPTIMIZATION TEST COMPLETE")
-    print("="*60)
-    
-    # Plot convergence
-    optimizer.plot_bo_convergence(bo_results)
+    # Set initial guess
+    initial_guess = [7.0e-5, 8.5e-5]  # 70μm positive, 85μm negative
 
+    # Run optimization
+    result = optimizer.optimize_design(initial_guess)
+
+    # Print results
+    if result.success:
+        print("\n" + "=" * 50)
+        print("BO OPTIMIZATION RESULTS")
+        print("=" * 50)
+        print(f"Optimization successful: {result.message}")
+        print(f"Number of iterations: {result.nit}")
+        print(f"Final objective value: {-result.fun:.2f} Wh/L")
+        print(f"Optimal positive electrode thickness: {result.x[0] * 1e6:.2f} μm")
+        print(f"Optimal negative electrode thickness: {result.x[1] * 1e6:.2f} μm")
+        print(f"Total thickness: {(result.x[0] + result.x[1]) * 1e6:.2f} μm")
+
+        # Compare with initial design
+        initial_results = optimizer.simulate_battery({
+            "Positive electrode thickness [m]": initial_guess[0],
+            "Negative electrode thickness [m]": initial_guess[1]
+        })
+
+        if initial_results["success"]:
+            print(f"Initial energy density: {initial_results['energy_density']:.2f} Wh/L")
+            print(f"Optimized energy density: {-result.fun:.2f} Wh/L")
+            improvement = ((-result.fun - initial_results["energy_density"]) /
+                           initial_results["energy_density"] * 100)
+            print(f"Energy density improvement: {improvement:.1f}%")
+
+        # Plot results
+        optimizer.plot_results(initial_guess, result.x)
+
+    else:
+        print(f"Optimization failed: {result.message}")
 
 
 if __name__ == "__main__":

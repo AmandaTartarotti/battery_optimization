@@ -1,6 +1,8 @@
 # 🔋 Battery Optimization using PyBaMM & Bayesian Optimization
 
-This project explores **battery parameter optimization** using the **PyBaMM** framework and **Bayesian Optimization (BO)**.  
+This project was developed by Amanda Tartarotti Cardozo da Silva and Miriam Romaniuc for the Optimization Techniques course in the 2025/2026 academic year of the Master in Computacional Engineering and Smart Systems at University of Basque Country (EHU/UPV).
+
+This work explores **battery parameter optimization** using the **PyBaMM** framework and **Bayesian Optimization (BO)**.  
 The goal is to maximize battery **energy density** while satisfying voltage and manufacturing constraints.
 
 ---
@@ -35,6 +37,4 @@ pip install pybamm GPy GPyOpt
 
 ```
 
-*****************************************************************************************
--> I tested the initial script, it is working but for some reason the plot is not being displayed fot me. I also found this website that provides some explanation about our topic: https://lazyjobseeker.github.io/en/posts/pybamm-cheat-sheet-1/#pybamm
--> About the BO library, I found this one while searching for options: https://github.com/pybop-team/PyBOP, it is quite new but very foccus on our problem. There is another library that is more 'safe' to work GPyOpt, it is more general-purposed so I did initial implementation with that
+**********************************************************************************************************************
