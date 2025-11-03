@@ -110,28 +110,6 @@ class BatteryOptimizer:
         # Return negative energy density (we want to maximize energy density)
         return -results["energy_density"]
 
-    """ no need for these in bayesian  opt
-    def constraints(self):
-
-        # Voltage should not drop below 3.0V during discharge
-        def voltage_constraint(x):
-            params_dict = {
-                "Positive electrode thickness [m]": x[0],
-                "Negative electrode thickness [m]": x[1]
-            }
-            results = self.simulate_battery(params_dict)
-            return results["min_voltage"] - 3.0  # min_voltage >= 3.0V
-
-        # Total thickness constraint (manufacturing limits)
-        def thickness_constraint(x):
-            return 20e-5 - (x[0] + x[1])  # total_thickness <= 20μm
-
-        return [
-            {'type': 'ineq', 'fun': voltage_constraint},
-            {'type': 'ineq', 'fun': thickness_constraint}
-        ]
-
-        """
 
     def optimize_design(self, initial_guess=None):
         """
@@ -247,41 +225,13 @@ class BatteryOptimizer:
         plt.close()
 
 
-# Possible extension to higher number of parameters
-def enhanced_optimization():
-    """More realistic optimization with additional parameters"""
-
-    # Additional design variables
-    design_variables = {
-        'Positive electrode thickness [m]': (5e-5, 15e-5),
-        'Negative electrode thickness [m]': (5e-5, 15e-5),
-        'Positive electrode porosity': (0.2, 0.4),
-        'Negative electrode porosity': (0.2, 0.4),
-        'Positive particle radius [m]': (1e-6, 10e-6),
-    }
-
-    # Multiple objectives
-    objectives = {
-        'energy_density': 'maximize',
-        'capacity_fade_100_cycles': 'minimize',
-        'heat_generation': 'minimize'
-    }
-
-    # Multiple constraints
-    constraints = {
-        'min_voltage_1C': '>= 3.0',
-        'max_temperature': '<= 60.0',
-        'power_density_5C': '>= 1000'
-    }
-
-
 def main():
     """Main function to run the battery optimization"""
     # Initialize optimizer
     optimizer = BatteryOptimizer()
 
     # Set initial guess
-    initial_guess = [7.0e-5, 8.5e-5]  # 70μm positive, 85μm negative
+    initial_guess = [7.0e-5, 8.5e-5]
 
     # Run optimization
     result = optimizer.optimize_design(initial_guess)
