@@ -92,21 +92,29 @@ class BatteryOptimizer:
         Returns:
             float: Negative energy density (to maximize)
         """
-        positive_thickness = x[0]
-        negative_thickness = x[1]
+        # inside objective_function(x) with 7 dims:
+        pos_thk, neg_thk, sep_thk, pos_eps, neg_eps, pos_rad, neg_rad = x
 
         params_dict = {
-            "Positive electrode thickness [m]": positive_thickness,
-            "Negative electrode thickness [m]": negative_thickness
+            "Positive electrode thickness [m]": pos_thk,
+            "Negative electrode thickness [m]": neg_thk,
+            "Separator thickness [m]": sep_thk,
+            "Positive electrode porosity": pos_eps,
+            "Negative electrode porosity": neg_eps,
+            "Positive particle radius [m]": pos_rad,
+            "Negative particle radius [m]": neg_rad,
         }
 
+        penalty = 0.0
+        total_thk = pos_thk + sep_thk + neg_thk
+        if total_thk > 2.5e-4:
+            penalty += 1e5 * (total_thk - 2.5e-4)
+
         results = self.simulate_battery(params_dict)
+        if not results["success"] or results["min_voltage"] < 3.0:
+            return 1e6  # infeasible / failed
 
-        if not results["success"]:
-            return 1e6  # Large penalty for failed simulations
-
-        # Return negative energy density (we want to maximize energy density)
-        return -results["energy_density"]
+        return -(results["energy_density"]) + penalty
 
     """ no need for these in bayesian  opt
     def constraints(self):
@@ -156,8 +164,13 @@ class BatteryOptimizer:
 
         # Define the optimization domain in GPyOpt format
         domain = [
-            {'name': 'positive_thickness', 'type': 'continuous', 'domain': (bounds[0][0], bounds[0][1])},
-            {'name': 'negative_thickness', 'type': 'continuous', 'domain': (bounds[1][0], bounds[1][1])}
+            {'name': 'pos_thk', 'type': 'continuous', 'domain': (5e-5, 12e-5)},
+            {'name': 'neg_thk', 'type': 'continuous', 'domain': (6e-5, 12e-5)},
+            {'name': 'sep_thk', 'type': 'continuous', 'domain': (1e-5, 3e-5)},
+            {'name': 'pos_eps', 'type': 'continuous', 'domain': (0.25, 0.40)},
+            {'name': 'neg_eps', 'type': 'continuous', 'domain': (0.25, 0.40)},
+            {'name': 'pos_rad', 'type': 'continuous', 'domain': (1e-6, 8e-6)},
+            {'name': 'neg_rad', 'type': 'continuous', 'domain': (1e-6, 1e-5)},
         ]
 
         # Wrap the objective function so it matches GPyOpt’s expected input shape
@@ -167,14 +180,17 @@ class BatteryOptimizer:
             return np.array(results).reshape(-1, 1)
 
         # Create and run the Bayesian optimizer
+        kernel = GPy.kern.Matern52(input_dim=len(domain), ARD=True)
         bo = GPyOpt.methods.BayesianOptimization(
-            f=f,
-            domain=domain,
-            acquisition_type='MPI',
-            maximize=False
+            f=f, domain=domain, kernel=kernel,
+            acquisition_type='EI', acquisition_jitter=0.01
         )
 
         bo.run_optimization(max_iter=20, verbosity=True)
+
+        ls = bo.model.model.kern.lengthscale.values
+        rel_importance = (1 / ls ** 2) / np.sum(1 / ls ** 2)
+        print("Relative importance per var (pos_thk .. neg_rad):", rel_importance)
 
         # Mimic SciPy’s `result` object so the rest of the code still works
         class BOResult:
@@ -191,9 +207,10 @@ class BatteryOptimizer:
 
     def plot_results(self, initial_params, optimized_params):
         """Plot comparison between initial and optimized designs"""
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
 
-        # Simulate initial design
+        # --- Voltage comparison ---
+        # Simulate initial design (only first 2 matter for visualization)
         initial_results = self.simulate_battery({
             "Positive electrode thickness [m]": initial_params[0],
             "Negative electrode thickness [m]": initial_params[1]
@@ -205,7 +222,6 @@ class BatteryOptimizer:
             "Negative electrode thickness [m]": optimized_params[1]
         })
 
-        # Plot voltage profiles
         if initial_results["success"] and optimized_results["success"]:
             ax1.plot(initial_results["time"] / 60, initial_results["voltage_profile"],
                      'b-', label='Initial Design', linewidth=2)
@@ -217,22 +233,48 @@ class BatteryOptimizer:
             ax1.legend()
             ax1.grid(True)
 
-        # Plot design parameters
-        labels = ['Positive\nElectrode', 'Negative\nElectrode']
-        initial_thickness = [initial_params[0] * 1e6, initial_params[1] * 1e6]
-        optimized_thickness = [optimized_params[0] * 1e6, optimized_params[1] * 1e6]
+        # --- Multi-parameter comparison ---
+        labels = [
+            'Pos. thickness [μm]',
+            'Neg. thickness [μm]',
+            'Separator [μm]',
+            'Pos. porosity',
+            'Neg. porosity',
+            'Pos. particle radius [μm]',
+            'Neg. particle radius [μm]'
+        ]
+
+        # Convert to appropriate scales
+        init_scaled = [
+            initial_params[0] * 1e6,  # μm
+            initial_params[1] * 1e6,
+            20,                       # Assume mid separator for baseline (dummy)
+            0.3,                      # Assume mid porosity
+            0.3,
+            5.0,                      # μm
+            6.0                       # μm
+        ]
+
+        opt_scaled = [
+            optimized_params[0] * 1e6,
+            optimized_params[1] * 1e6,
+            optimized_params[2] * 1e6,
+            optimized_params[3],
+            optimized_params[4],
+            optimized_params[5] * 1e6,
+            optimized_params[6] * 1e6
+        ]
 
         x = np.arange(len(labels))
         width = 0.35
 
-        ax2.bar(x - width / 2, initial_thickness, width, label='Initial', alpha=0.7)
-        ax2.bar(x + width / 2, optimized_thickness, width, label='Optimized', alpha=0.7)
+        ax2.bar(x - width/2, init_scaled, width, label='Initial', alpha=0.7)
+        ax2.bar(x + width/2, opt_scaled, width, label='Optimized', alpha=0.7)
 
-        ax2.set_xlabel('Electrode Type')
-        ax2.set_ylabel('Thickness [μm]')
-        ax2.set_title('Electrode Thickness Comparison')
         ax2.set_xticks(x)
-        ax2.set_xticklabels(labels)
+        ax2.set_xticklabels(labels, rotation=45, ha='right')
+        ax2.set_ylabel('Scaled parameter value')
+        ax2.set_title('Comparison of All Optimized Parameters')
         ax2.legend()
         ax2.grid(True, alpha=0.3)
 
