@@ -9,13 +9,15 @@ The goal is to maximize battery **energy density** while satisfying voltage and 
 
 ## Overview
 
-- The project starts from a base implementation that uses **Scipy's SLSQP optimizer**.  
+- The project starts from a base implementation that uses **Scipy's SLSQP optimizer**. 
 - A second implementation introduces **Bayesian Optimization (BO)** using the **GPyOpt** library.
-- Both methods use **PyBaMM’s DFN model** (`pybamm.lithium_ion.DFN`) for simulation.
+- There are three main files:
+    * battery_optimization - Original Script
+    * battery_optimization_bo - BO Implementation following basic parameters
+    * bt_opt_more_params - BO Implementation with enhanced parameters
 
 ## Useful references:
 - PyBaMM Cheat Sheet: [https://lazyjobseeker.github.io/en/posts/pybamm-cheat-sheet-1/](https://lazyjobseeker.github.io/en/posts/pybamm-cheat-sheet-1/)
-- PyBOP (Bayesian Optimization for Batteries): [https://github.com/pybop-team/PyBOP](https://github.com/pybop-team/PyBOP)
 - GPyOpt Documentation: [https://sheffieldml.github.io/GPyOpt/](https://sheffieldml.github.io/GPyOpt/)
 
 ---

@@ -218,7 +218,7 @@ class BatteryOptimizer:
 
         # Add method to save image in a folder with timestamp
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"images/bo_optimization_results_{timestamp}.png"
+        filename = f"generated_results/bo_optimization_results_{timestamp}.png"
 
         plt.tight_layout()
         plt.savefig(filename, dpi=300)
